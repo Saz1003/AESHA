@@ -1,0 +1,524 @@
+module AESHA(input  logic         i_clk,
+             input  logic         i_reset,
+             input  logic         i_aes_or_keccak,
+             input  logic         i_enc_or_dec,
+			 input  logic         genkey,
+             input  logic [127:0] i_key, // msb -> lsb w0 -> w3
+             input  logic [511:0] i_data,
+             output logic [511:0] o_data,
+             output logic         done
+             );
+
+    logic ctrl_0, ctrl_1, done_a, done_k;
+    logic [4:0] round_a, round_k;
+    
+    // SHA3
+    logic [1599:0] S_in, S_out;
+    logic [63:0] sha_in      [0:4][0:4];
+    logic [63:0] sha_in_sie      [0:4][0:4];
+    logic [31:0] sha_in_mid  [0:1][0:4][0:4];
+    logic [63:0] sha_mid_out [0:4][0:4];
+    logic [63:0] sha_out     [0:4][0:4];
+    logic [63:0] round_constant;
+    logic [31:0] D [0:1][0:4];
+    logic [63:0] D_in [0:4];
+
+    // AES128
+	logic [511:0] o_data_aes_tmp;
+    logic [127:0] A_in [0:3];
+	logic [127:0] A_out_mid_tmp [0:3];
+    logic [63:0 ] A_out[0:1][0:3];
+	logic [31:0 ] A_mid_out [0:3];
+	logic [127:0] A_out_tmp [0:3];
+    logic [31:0 ] key_in_mid [0:3];
+	logic [31:0 ] A_out_EIC [0:3];
+    logic [31:0 ] A_in_mid [0:3][0:3][0:4];
+    logic [127:0] A_in_lut_mid [0:3];
+    logic [31:0 ] A_lut_out [0:3][0:3][0:3];
+    logic [31:0 ] mem_rk [0:43];
+    logic [31:0 ] rcon, w;
+    logic          enc_dec, t_or_s, round_a_valid;
+
+    round_counter_k round_counter_ins1(.i_clk(i_clk), .i_reset(i_reset), .i_aes_or_keccak(i_aes_or_keccak), .o_round(round_k));
+    round_counter_a round_counter_ins0(.i_clk(i_clk), .i_reset(i_reset), .i_aes_or_keccak(i_aes_or_keccak), .o_round(round_a), .o_round_valid(round_a_valid));
+
+    assign ctrl_0 = (round_a == 0) ? 1'b0 : 1'b1;
+    assign ctrl_1 = (round_k == 0) ? 1'b0 : 1'b1;
+
+    // always_ff @(posedge i_clk or negedge i_reset) begin
+	// 	  if (!i_reset || done) begin
+	// 		   genkey = 1'b1;
+	// 	  end
+	// 	  else if (round_a == 10) begin
+	// 		   genkey = 1'b0;
+	// 	  end
+	// end
+	 
+	always_comb begin
+		 if (ctrl_0 == 0) begin
+			if (genkey) begin
+				A_in[0] = i_key;
+				A_in[1] = 128'h0;
+				A_in[2] = 128'h0;
+				A_in[3] = 128'h0;
+			end
+			else begin
+				A_in[0] = (!i_enc_or_dec) ? i_data[511:384] ^ i_key : i_data[511:384] ^ {mem_rk[40], mem_rk[41], mem_rk[42], mem_rk[43]};
+				A_in[1] = (!i_enc_or_dec) ? i_data[383:256] ^ i_key : i_data[383:256] ^ {mem_rk[40], mem_rk[41], mem_rk[42], mem_rk[43]};
+				A_in[2] = (!i_enc_or_dec) ? i_data[255:128] ^ i_key : i_data[255:128] ^ {mem_rk[40], mem_rk[41], mem_rk[42], mem_rk[43]};
+				A_in[3] = (!i_enc_or_dec) ? i_data[127:0  ] ^ i_key : i_data[127:0  ] ^ {mem_rk[40], mem_rk[41], mem_rk[42], mem_rk[43]};
+		    end
+		end
+		else begin
+			if (genkey) begin
+		 	    A_in[0] = A_out_mid_tmp[0];
+			    A_in[1] = A_out_mid_tmp[1];
+			    A_in[2] = A_out_mid_tmp[2];
+			    A_in[3] = A_out_mid_tmp[3];
+			end
+			else begin
+			    A_in[0] = A_out_mid_tmp[0];
+			    A_in[1] = A_out_mid_tmp[1];
+			    A_in[2] = A_out_mid_tmp[2];
+			    A_in[3] = A_out_mid_tmp[3];
+			end
+		end
+	end
+
+    assign t_or_s  = (genkey) ? 1'b1 : (round_a == 9) ? 1'b1 : 1'b0;
+    assign enc_dec = (genkey) ? 1'b0 : i_enc_or_dec;
+
+    shiftrows sr0_inst(.i_reset(i_reset),
+						.i_enc_or_dec(i_enc_or_dec),
+						.A_in(A_in[0]), 
+						.A_out(A_out_tmp[0])
+						);
+
+    shiftrows sr1_inst(.i_reset(i_reset),
+						.i_enc_or_dec(i_enc_or_dec),
+						.A_in(A_in[1]), 
+						.A_out(A_out_tmp[1])
+						);
+
+    shiftrows sr2_inst(.i_reset(i_reset),
+						.i_enc_or_dec(i_enc_or_dec),
+						.A_in(A_in[2]), 
+						.A_out(A_out_tmp[2])
+						);
+
+    shiftrows sr3_inst(.i_reset(i_reset),
+						.i_enc_or_dec(i_enc_or_dec),
+						.A_in(A_in[3]), 
+						.A_out(A_out_tmp[3])
+						);
+
+    always_ff @(posedge i_clk) begin
+      if (ctrl_0 == 0) begin
+		  	if(genkey) begin
+		  		A_in_lut_mid[0] = A_in[0];
+		  		A_in_lut_mid[1] = A_in[1];
+		  		A_in_lut_mid[2] = A_in[2];
+		  		A_in_lut_mid[3] = A_in[3];
+		  	end 
+		  	else begin
+		  	   A_in_lut_mid[0] = A_out_tmp[0];
+		  	   A_in_lut_mid[1] = A_out_tmp[1];
+		  	   A_in_lut_mid[2] = A_out_tmp[2];
+		  	   A_in_lut_mid[3] = A_out_tmp[3];
+		  	end
+		  end
+		  else if (round_a_valid) begin
+		  	if(genkey) begin
+		  	  A_in_lut_mid[0] = A_in[0];
+		  	  A_in_lut_mid[1] = A_in[1];
+		  	  A_in_lut_mid[2] = A_in[2];
+		  	  A_in_lut_mid[3] = A_in[3];
+		  	end 
+		  	else begin
+		  	  A_in_lut_mid[0] = A_out_tmp[0];
+		  	  A_in_lut_mid[1] = A_out_tmp[1];
+		  	  A_in_lut_mid[2] = A_out_tmp[2];
+		  	  A_in_lut_mid[3] = A_out_tmp[3];
+		  	end
+		  end
+    end   
+
+	 assign A_mid_out[0] = A_out[0][0][63:32];
+	 assign A_mid_out[1] = A_out[0][0][31:0];
+	 assign A_mid_out[2] = A_out[0][1][63:32];
+	 assign A_mid_out[3] = A_out[0][1][31:0];
+	 
+	 keyEIC keyeic_inst (.A_in(A_mid_out),
+						.A_out(A_out_EIC)
+						);
+								
+    // store roundkey
+    always_ff @(negedge i_clk or negedge i_reset) begin
+        if(!i_reset) begin
+            for(int i = 0; i < 44; i++) begin
+                mem_rk[i] = 32'h0;
+            end
+        end
+        else begin
+            mem_rk[0] = i_key[127:96];
+            mem_rk[1] = i_key[95 :64];
+            mem_rk[2] = i_key[63 :32];
+            mem_rk[3] = i_key[31 : 0];
+            if(genkey) begin
+                if(round_a_valid) begin
+						  if(!i_enc_or_dec) begin
+							  for(int i = 0; i < 4; i++) begin
+									mem_rk[4 * round_a + i] = A_mid_out[i];
+							  end
+						  end
+						  else begin
+							  if (round_a < 10) begin
+								  for(int i = 0; i < 4; i++) begin
+										mem_rk[4 * round_a + i] = A_out_EIC[i];
+								  end
+							  end
+							  else begin
+								  for(int i = 0; i < 4; i++) begin
+										mem_rk[4 * round_a + i] = A_mid_out[i];
+								  end
+							  end
+						  end
+                end
+            end
+        end
+    end
+	 
+	 // apply roundkey 
+	 always_ff @(posedge i_clk or negedge i_reset) begin
+		 if(!i_reset) begin
+			  key_in_mid[0] = 32'h0;
+			  key_in_mid[1] = 32'h0;
+			  key_in_mid[2] = 32'h0;
+			  key_in_mid[3] = 32'h0;
+		 end
+		 else begin
+			  if (!i_aes_or_keccak) begin
+					key_in_mid[0] = 32'h0;
+					key_in_mid[1] = 32'h0;
+					key_in_mid[2] = 32'h0;
+					key_in_mid[3] = 32'h0;
+			  end
+			  else if(!i_enc_or_dec) begin
+					for (int i = 0; i < 4; i++) begin
+						key_in_mid[i] = mem_rk[4 * round_a + i + 4];
+					end
+			  end
+			  else begin
+					for (int i = 0; i < 4; i++) begin
+						key_in_mid[i] = mem_rk[39 - 4 * round_a + i - 3];
+					end
+			  end
+		 end
+	 end
+
+    squad_lookup_table slut(.i_clk(i_clk),
+                            .i_reset(i_reset),
+                            .i_enc_or_dec(enc_dec),
+                            .i_genkey(genkey),
+                            .i_t_or_s(t_or_s),
+                            .i_data(A_in_lut_mid),
+                            .o_data(A_lut_out)
+                            );
+
+    r_con rcon_inst(.i_clk(i_clk), .t(round_a), .rcon(rcon));
+
+    assign w = A_lut_out[0][3][0] ^  A_lut_out[0][3][1] ^ A_lut_out[0][3][2] ^ A_lut_out[0][3][3] ^ rcon;
+
+    // n2_xor1
+    assign A_in_mid[0][0][0] = (genkey) ? A_in[0][127:96] : key_in_mid[0];
+	assign A_in_mid[0][0][1] = (genkey) ? 32'h0 		: A_lut_out[0][0][0];
+	assign A_in_mid[0][0][2] = (genkey) ? 32'h0 		: A_lut_out[0][0][1];
+	assign A_in_mid[0][0][3] = (genkey) ? 32'h0 		: A_lut_out[0][0][2];
+	assign A_in_mid[0][0][4] = (genkey) ? w 		    : A_lut_out[0][0][3];
+	
+	assign A_in_mid[0][1][0] = (genkey) ? A_in[0][95 :64] : key_in_mid[1];
+	assign A_in_mid[0][1][1] = (genkey) ? 32'h0 		: A_lut_out[0][1][0];
+	assign A_in_mid[0][1][2] = (genkey) ? 32'h0 		: A_lut_out[0][1][1];
+	assign A_in_mid[0][1][3] = (genkey) ? A_in[0][127:96] : A_lut_out[0][1][2];
+	assign A_in_mid[0][1][4] = (genkey) ? w 		    : A_lut_out[0][1][3];
+	
+	assign A_in_mid[0][2][0] = (genkey) ? A_in[0][63 :32] : key_in_mid[2];
+	assign A_in_mid[0][2][1] = (genkey) ? 32'h0 		: A_lut_out[0][2][0];
+	assign A_in_mid[0][2][2] = (genkey) ? A_in[0][95 :64] : A_lut_out[0][2][1];
+	assign A_in_mid[0][2][3] = (genkey) ? A_in[0][127:96] : A_lut_out[0][2][2];
+	assign A_in_mid[0][2][4] = (genkey) ? w 		    : A_lut_out[0][2][3];
+	
+	assign A_in_mid[0][3][0] = (genkey) ? A_in[0][31 : 0] : key_in_mid[3]; 
+	assign A_in_mid[0][3][1] = (genkey) ? A_in[0][63 :32] : A_lut_out[0][3][0]; 
+	assign A_in_mid[0][3][2] = (genkey) ? A_in[0][95 :64] : A_lut_out[0][3][1]; 
+	assign A_in_mid[0][3][3] = (genkey) ? A_in[0][127:96] : A_lut_out[0][3][2]; 
+	assign A_in_mid[0][3][4] = (genkey) ? w 		    : A_lut_out[0][3][3];
+	 
+	 // n1_xor1
+    assign A_in_mid[2][0][0] = (genkey) ? 32'h0 		  : key_in_mid[0];
+	assign A_in_mid[2][0][1] = (genkey) ? 32'h0 		  : A_lut_out[2][0][0];
+	assign A_in_mid[2][0][2] = (genkey) ? 32'h0 		  : A_lut_out[2][0][1];
+	assign A_in_mid[2][0][3] = (genkey) ? 32'h0 		  : A_lut_out[2][0][2];
+	assign A_in_mid[2][0][4] = (genkey) ? 32'h0 		  : A_lut_out[2][0][3];
+	
+	assign A_in_mid[2][1][0] = (genkey) ? 32'h0 		  : key_in_mid[1];
+	assign A_in_mid[2][1][1] = (genkey) ? 32'h0 		  : A_lut_out[2][1][0];
+	assign A_in_mid[2][1][2] = (genkey) ? 32'h0 		  : A_lut_out[2][1][1];
+	assign A_in_mid[2][1][3] = (genkey) ? 32'h0 		  : A_lut_out[2][1][2];
+	assign A_in_mid[2][1][4] = (genkey) ? 32'h0 		  : A_lut_out[2][1][3];
+	
+	assign A_in_mid[2][2][0] = (genkey) ? 32'h0 		  : key_in_mid[2];
+	assign A_in_mid[2][2][1] = (genkey) ? 32'h0 		  : A_lut_out[2][2][0];
+	assign A_in_mid[2][2][2] = (genkey) ? 32'h0 		  : A_lut_out[2][2][1];
+	assign A_in_mid[2][2][3] = (genkey) ? 32'h0 		  : A_lut_out[2][2][2];
+	assign A_in_mid[2][2][4] = (genkey) ? 32'h0 		  : A_lut_out[2][2][3];
+
+	assign A_in_mid[2][3][0] = (genkey) ? 32'h0 		  : key_in_mid[3]; 
+	assign A_in_mid[2][3][1] = (genkey) ? 32'h0 		  : A_lut_out[2][3][0]; 
+	assign A_in_mid[2][3][2] = (genkey) ? 32'h0 		  : A_lut_out[2][3][1]; 
+	assign A_in_mid[2][3][3] = (genkey) ? 32'h0 		  : A_lut_out[2][3][2]; 
+	assign A_in_mid[2][3][4] = (genkey) ? 32'h0 		  : A_lut_out[2][3][3];
+	 
+	 // n2_xor2
+    assign A_in_mid[1][0][0] = (genkey) ? 32'h0 		  : key_in_mid[0];
+	assign A_in_mid[1][0][1] = (genkey) ? 32'h0 		  : A_lut_out[1][0][0];
+	assign A_in_mid[1][0][2] = (genkey) ? 32'h0 		  : A_lut_out[1][0][1];
+	assign A_in_mid[1][0][3] = (genkey) ? 32'h0 		  : A_lut_out[1][0][2];
+	assign A_in_mid[1][0][4] = (genkey) ? 32'h0 		  : A_lut_out[1][0][3];
+	
+	assign A_in_mid[1][1][0] = (genkey) ? 32'h0 		  : key_in_mid[1];
+	assign A_in_mid[1][1][1] = (genkey) ? 32'h0 		  : A_lut_out[1][1][0];
+	assign A_in_mid[1][1][2] = (genkey) ? 32'h0 		  : A_lut_out[1][1][1];
+	assign A_in_mid[1][1][3] = (genkey) ? 32'h0 		  : A_lut_out[1][1][2];
+	assign A_in_mid[1][1][4] = (genkey) ? 32'h0 		  : A_lut_out[1][1][3];
+
+	assign A_in_mid[1][2][0] = (genkey) ? 32'h0 		  : key_in_mid[2];
+	assign A_in_mid[1][2][1] = (genkey) ? 32'h0 		  : A_lut_out[1][2][0];
+	assign A_in_mid[1][2][2] = (genkey) ? 32'h0 		  : A_lut_out[1][2][1];
+	assign A_in_mid[1][2][3] = (genkey) ? 32'h0 		  : A_lut_out[1][2][2];
+	assign A_in_mid[1][2][4] = (genkey) ? 32'h0 		  : A_lut_out[1][2][3];
+	
+	assign A_in_mid[1][3][0] = (genkey) ? 32'h0 		  : key_in_mid[3]; 
+	assign A_in_mid[1][3][1] = (genkey) ? 32'h0 		  : A_lut_out[1][3][0]; 
+	assign A_in_mid[1][3][2] = (genkey) ? 32'h0 		  : A_lut_out[1][3][1]; 
+	assign A_in_mid[1][3][3] = (genkey) ? 32'h0 		  : A_lut_out[1][3][2]; 
+	assign A_in_mid[1][3][4] = (genkey) ? 32'h0 		  : A_lut_out[1][3][3];
+	 
+	 // n1_xor2
+    assign A_in_mid[3][0][0] = (genkey) ? 32'h0 		  : key_in_mid[0];
+	assign A_in_mid[3][0][1] = (genkey) ? 32'h0 		  : A_lut_out[3][0][0];
+	assign A_in_mid[3][0][2] = (genkey) ? 32'h0 		  : A_lut_out[3][0][1];
+	assign A_in_mid[3][0][3] = (genkey) ? 32'h0 		  : A_lut_out[3][0][2];
+	assign A_in_mid[3][0][4] = (genkey) ? 32'h0 		  : A_lut_out[3][0][3];
+	
+	assign A_in_mid[3][1][0] = (genkey) ? 32'h0 		  : key_in_mid[1];
+	assign A_in_mid[3][1][1] = (genkey) ? 32'h0 		  : A_lut_out[3][1][0];
+	assign A_in_mid[3][1][2] = (genkey) ? 32'h0 		  : A_lut_out[3][1][1];
+	assign A_in_mid[3][1][3] = (genkey) ? 32'h0 		  : A_lut_out[3][1][2];
+	assign A_in_mid[3][1][4] = (genkey) ? 32'h0 		  : A_lut_out[3][1][3];
+	
+	assign A_in_mid[3][2][0] = (genkey) ? 32'h0 		  : key_in_mid[2];
+	assign A_in_mid[3][2][1] = (genkey) ? 32'h0 		  : A_lut_out[3][2][0];
+	assign A_in_mid[3][2][2] = (genkey) ? 32'h0 		  : A_lut_out[3][2][1];
+	assign A_in_mid[3][2][3] = (genkey) ? 32'h0 		  : A_lut_out[3][2][2];
+	assign A_in_mid[3][2][4] = (genkey) ? 32'h0 		  : A_lut_out[3][2][3];
+	
+	assign A_in_mid[3][3][0] = (genkey) ? 32'h0 		  : key_in_mid[3]; 
+	assign A_in_mid[3][3][1] = (genkey) ? 32'h0 		  : A_lut_out[3][3][0]; 
+	assign A_in_mid[3][3][2] = (genkey) ? 32'h0 		  : A_lut_out[3][3][1]; 
+	assign A_in_mid[3][3][3] = (genkey) ? 32'h0 		  : A_lut_out[3][3][2]; 
+	assign A_in_mid[3][3][4] = (genkey) ? 32'h0 		  : A_lut_out[3][3][3];
+
+    assign S_in = {i_data,8'h01, 48'h0, 8'h80, 1024'h0};
+
+    S_to_A SA_ins(.S(S_in), .A(sha_in));
+
+    // xor 1
+    assign sha_in_mid[0][0][0] = (ctrl_1 == 0) ? sha_in[0][0][63:32] : sha_out[0][0][63:32];
+    assign sha_in_mid[0][0][1] = (ctrl_1 == 0) ? sha_in[0][1][63:32] : sha_out[0][1][63:32];
+    assign sha_in_mid[0][0][2] = (ctrl_1 == 0) ? sha_in[0][2][63:32] : sha_out[0][2][63:32];
+    assign sha_in_mid[0][0][3] = (ctrl_1 == 0) ? sha_in[0][3][63:32] : sha_out[0][3][63:32];
+    assign sha_in_mid[0][0][4] = (ctrl_1 == 0) ? sha_in[0][4][63:32] : sha_out[0][4][63:32];
+
+    assign sha_in_mid[0][1][0] = (ctrl_1 == 0) ? sha_in[1][0][63:32] : sha_out[1][0][63:32];
+    assign sha_in_mid[0][1][1] = (ctrl_1 == 0) ? sha_in[1][1][63:32] : sha_out[1][1][63:32];
+    assign sha_in_mid[0][1][2] = (ctrl_1 == 0) ? sha_in[1][2][63:32] : sha_out[1][2][63:32];
+    assign sha_in_mid[0][1][3] = (ctrl_1 == 0) ? sha_in[1][3][63:32] : sha_out[1][3][63:32];
+    assign sha_in_mid[0][1][4] = (ctrl_1 == 0) ? sha_in[1][4][63:32] : sha_out[1][4][63:32];
+    
+    assign sha_in_mid[0][2][0] = (ctrl_1 == 0) ? sha_in[2][0][63:32] : sha_out[2][0][63:32];
+    assign sha_in_mid[0][2][1] = (ctrl_1 == 0) ? sha_in[2][1][63:32] : sha_out[2][1][63:32];
+    assign sha_in_mid[0][2][2] = (ctrl_1 == 0) ? sha_in[2][2][63:32] : sha_out[2][2][63:32];
+    assign sha_in_mid[0][2][3] = (ctrl_1 == 0) ? sha_in[2][3][63:32] : sha_out[2][3][63:32];
+    assign sha_in_mid[0][2][4] = (ctrl_1 == 0) ? sha_in[2][4][63:32] : sha_out[2][4][63:32];
+
+    assign sha_in_mid[0][3][0] = (ctrl_1 == 0) ? sha_in[3][0][63:32] : sha_out[3][0][63:32];
+    assign sha_in_mid[0][3][1] = (ctrl_1 == 0) ? sha_in[3][1][63:32] : sha_out[3][1][63:32];
+    assign sha_in_mid[0][3][2] = (ctrl_1 == 0) ? sha_in[3][2][63:32] : sha_out[3][2][63:32];
+    assign sha_in_mid[0][3][3] = (ctrl_1 == 0) ? sha_in[3][3][63:32] : sha_out[3][3][63:32];
+    assign sha_in_mid[0][3][4] = (ctrl_1 == 0) ? sha_in[3][4][63:32] : sha_out[3][4][63:32];
+
+    assign sha_in_mid[0][4][0] = (ctrl_1 == 0) ? sha_in[4][0][63:32] : sha_out[4][0][63:32];
+    assign sha_in_mid[0][4][1] = (ctrl_1 == 0) ? sha_in[4][1][63:32] : sha_out[4][1][63:32];
+    assign sha_in_mid[0][4][2] = (ctrl_1 == 0) ? sha_in[4][2][63:32] : sha_out[4][2][63:32];
+    assign sha_in_mid[0][4][3] = (ctrl_1 == 0) ? sha_in[4][3][63:32] : sha_out[4][3][63:32];
+    assign sha_in_mid[0][4][4] = (ctrl_1 == 0) ? sha_in[4][4][63:32] : sha_out[4][4][63:32];
+
+    // xor 2
+    assign sha_in_mid[1][0][0] = (ctrl_1 == 0) ? sha_in[0][0][31:0 ] : sha_out[0][0][31:0 ];
+    assign sha_in_mid[1][0][1] = (ctrl_1 == 0) ? sha_in[0][1][31:0 ] : sha_out[0][1][31:0 ];
+    assign sha_in_mid[1][0][2] = (ctrl_1 == 0) ? sha_in[0][2][31:0 ] : sha_out[0][2][31:0 ];
+    assign sha_in_mid[1][0][3] = (ctrl_1 == 0) ? sha_in[0][3][31:0 ] : sha_out[0][3][31:0 ];
+    assign sha_in_mid[1][0][4] = (ctrl_1 == 0) ? sha_in[0][4][31:0 ] : sha_out[0][4][31:0 ];
+
+    assign sha_in_mid[1][1][0] = (ctrl_1 == 0) ? sha_in[1][0][31:0 ] : sha_out[1][0][31:0 ];
+    assign sha_in_mid[1][1][1] = (ctrl_1 == 0) ? sha_in[1][1][31:0 ] : sha_out[1][1][31:0 ];
+    assign sha_in_mid[1][1][2] = (ctrl_1 == 0) ? sha_in[1][2][31:0 ] : sha_out[1][2][31:0 ];
+    assign sha_in_mid[1][1][3] = (ctrl_1 == 0) ? sha_in[1][3][31:0 ] : sha_out[1][3][31:0 ];
+    assign sha_in_mid[1][1][4] = (ctrl_1 == 0) ? sha_in[1][4][31:0 ] : sha_out[1][4][31:0 ];
+    
+    assign sha_in_mid[1][2][0] = (ctrl_1 == 0) ? sha_in[2][0][31:0 ] : sha_out[2][0][31:0 ];
+    assign sha_in_mid[1][2][1] = (ctrl_1 == 0) ? sha_in[2][1][31:0 ] : sha_out[2][1][31:0 ];
+    assign sha_in_mid[1][2][2] = (ctrl_1 == 0) ? sha_in[2][2][31:0 ] : sha_out[2][2][31:0 ];
+    assign sha_in_mid[1][2][3] = (ctrl_1 == 0) ? sha_in[2][3][31:0 ] : sha_out[2][3][31:0 ];
+    assign sha_in_mid[1][2][4] = (ctrl_1 == 0) ? sha_in[2][4][31:0 ] : sha_out[2][4][31:0 ];
+
+    assign sha_in_mid[1][3][0] = (ctrl_1 == 0) ? sha_in[3][0][31:0 ] : sha_out[3][0][31:0 ];
+    assign sha_in_mid[1][3][1] = (ctrl_1 == 0) ? sha_in[3][1][31:0 ] : sha_out[3][1][31:0 ];
+    assign sha_in_mid[1][3][2] = (ctrl_1 == 0) ? sha_in[3][2][31:0 ] : sha_out[3][2][31:0 ];
+    assign sha_in_mid[1][3][3] = (ctrl_1 == 0) ? sha_in[3][3][31:0 ] : sha_out[3][3][31:0 ];
+    assign sha_in_mid[1][3][4] = (ctrl_1 == 0) ? sha_in[3][4][31:0 ] : sha_out[3][4][31:0 ];
+
+    assign sha_in_mid[1][4][0] = (ctrl_1 == 0) ? sha_in[4][0][31:0 ] : sha_out[4][0][31:0 ];
+    assign sha_in_mid[1][4][1] = (ctrl_1 == 0) ? sha_in[4][1][31:0 ] : sha_out[4][1][31:0 ];
+    assign sha_in_mid[1][4][2] = (ctrl_1 == 0) ? sha_in[4][2][31:0 ] : sha_out[4][2][31:0 ];
+    assign sha_in_mid[1][4][3] = (ctrl_1 == 0) ? sha_in[4][3][31:0 ] : sha_out[4][3][31:0 ];
+    assign sha_in_mid[1][4][4] = (ctrl_1 == 0) ? sha_in[4][4][31:0 ] : sha_out[4][4][31:0 ];
+
+
+	logic [63:0] C [0:4];
+	logic [63:0] C_rot [0:4];
+	logic [31:0] o_C [0:1][0:4];
+	logic [31:0] i_C_shifted [0:1][0:4];
+
+	assign C[0] = {o_C[0][0], o_C[1][0]};
+	assign C[1] = {o_C[0][1], o_C[1][1]};
+	assign C[2] = {o_C[0][2], o_C[1][2]};
+	assign C[3] = {o_C[0][3], o_C[1][3]};
+	assign C[4] = {o_C[0][4], o_C[1][4]};
+
+	rot rot_ins0 (.i_lane(C[0]), .i_r(6'b1), .o_lane(C_rot[0]));
+	rot rot_ins1 (.i_lane(C[1]), .i_r(6'b1), .o_lane(C_rot[1]));
+	rot rot_ins2 (.i_lane(C[2]), .i_r(6'b1), .o_lane(C_rot[2]));
+	rot rot_ins3 (.i_lane(C[3]), .i_r(6'b1), .o_lane(C_rot[3]));
+	rot rot_ins4 (.i_lane(C[4]), .i_r(6'b1), .o_lane(C_rot[4]));
+
+	assign i_C_shifted[0][0] = C_rot[0][63:32];
+	assign i_C_shifted[0][1] = C_rot[1][63:32];
+	assign i_C_shifted[0][2] = C_rot[2][63:32];
+	assign i_C_shifted[0][3] = C_rot[3][63:32];
+	assign i_C_shifted[0][4] = C_rot[4][63:32];
+
+	assign i_C_shifted[1][0] = C_rot[0][31:0];
+	assign i_C_shifted[1][1] = C_rot[1][31:0];
+	assign i_C_shifted[1][2] = C_rot[2][31:0];
+	assign i_C_shifted[1][3] = C_rot[3][31:0];
+	assign i_C_shifted[1][4] = C_rot[4][31:0];
+
+    unified_xor_section  uxs0_ins(.i_aes_or_keccak(i_aes_or_keccak),
+                                  .i_A_1_state(A_in_mid[2]),
+                                  .i_A_2_state(A_in_mid[0]),
+                                  .i_K_state(sha_in_mid[0]),
+								  .i_C_shifted(i_C_shifted[0]),
+								  .o_C(o_C[0]),
+                                  .o_A_state(A_out[0]),
+                                  .D(D[0])
+                                 );
+
+    unified_xor_section  uxs1_ins(.i_aes_or_keccak(i_aes_or_keccak),
+                                  .i_A_1_state(A_in_mid[3]),
+                                  .i_A_2_state(A_in_mid[1]),
+                                  .i_K_state(sha_in_mid[1]),
+								  .i_C_shifted(i_C_shifted[1]),
+								  .o_C(o_C[1]),
+                                  .o_A_state(A_out[1]),
+                                  .D(D[1])
+                                 );
+	 
+	always_ff @(negedge i_clk or negedge i_reset) begin
+		 if(!i_reset) begin
+			  for (int i = 0; i < 4; i++) A_out_mid_tmp[i] = 0;
+		 end
+		 else begin
+			  if(!i_aes_or_keccak || done_a) begin
+					for (int i = 0; i < 4; i++) A_out_mid_tmp[i] = 0;
+			  end
+			  else if(round_a == 0) begin
+					A_out_mid_tmp = A_in;
+			  end
+			  else if(round_a_valid) begin
+			  		A_out_mid_tmp[0] = {A_out[0][0], A_out[0][1]};
+					A_out_mid_tmp[1] = {A_out[1][0], A_out[1][1]};
+					A_out_mid_tmp[2] = {A_out[0][2], A_out[0][3]};
+					A_out_mid_tmp[3] = {A_out[1][2], A_out[1][3]};
+			  end
+			  
+		 end
+	end
+
+    rc rc_inst (.t(round_k), .rct(round_constant));
+
+    assign D_in[0] = {D[0][0], D[1][0]};
+    assign D_in[1] = {D[0][1], D[1][1]};
+    assign D_in[2] = {D[0][2], D[1][2]};
+    assign D_in[3] = {D[0][3], D[1][3]};
+    assign D_in[4] = {D[0][4], D[1][4]};
+
+	assign sha_in_sie = (round_k == 0) ? sha_in : sha_out;
+    sixie sixie_ins(.A_in(sha_in_sie), .D(D_in), .rc(round_constant), .A_out(sha_mid_out)); 
+
+    always_ff @(posedge i_clk, negedge i_reset) begin
+		if (!i_reset)
+			for (int x = 0; x < 5; x = x + 1) begin : reset_x
+				for (int y = 0; y < 5; y = y + 1) begin : reset_y
+					sha_out[x][y] = 0;
+				end
+			end
+
+		else if (round_k == 24)
+			for (int x = 0; x < 5; x = x + 1) begin : full_x
+				for (int y = 0; y < 5; y = y + 1) begin : full_y
+					sha_out[x][y] = 0;
+				end
+			end
+    
+        else if(i_aes_or_keccak)
+            for (int x = 0; x < 5; x = x + 1) begin : full_x
+		    	for (int y = 0; y < 5; y = y + 1) begin : full_y
+		    		sha_out[x][y] = 0;
+				end
+			end
+		else sha_out = sha_mid_out;
+    end
+
+    A_to_S AS_ins(.A(sha_out), .S(S_out));
+
+    assign done_k = (round_k == 24) ? 1'b1 : 1'b0;
+	always_ff @(negedge i_clk) begin
+		if(round_a == 10 && !genkey) begin
+			done_a = 1'b1;
+		end
+		else begin
+			done_a = 1'b0;
+		end
+	end
+	always_ff @(negedge i_clk) begin
+		if(round_a == 10 && !genkey) begin
+		    o_data_aes_tmp = {A_out[0][0], A_out[0][1], A_out[1][0], A_out[1][1], A_out[0][2], A_out[0][3], A_out[1][2], A_out[1][3]};
+		end
+	end
+
+    assign done = done_k || done_a;
+    assign o_data = (done && !i_aes_or_keccak) ? S_out[1599:1088]:  (done && i_aes_or_keccak) ?  o_data_aes_tmp : 512'h0;
+
+endmodule

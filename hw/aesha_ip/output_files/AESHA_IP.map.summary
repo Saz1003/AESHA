@@ -1,0 +1,17 @@
+Analysis & Synthesis Status : Successful - Sat Jun 21 18:19:18 2025
+Quartus Prime Version : 18.1.0 Build 625 09/12/2018 SJ Lite Edition
+Revision Name : AESHA_IP
+Top-level Entity Name : AESHA_wrapper
+Family : Cyclone V
+Logic utilization (in ALMs) : N/A
+Total registers : 6297
+Total pins : 66
+Total virtual pins : 0
+Total block memory bits : 0
+Total DSP Blocks : 0
+Total HSSI RX PCSs : 0
+Total HSSI PMA RX Deserializers : 0
+Total HSSI TX PCSs : 0
+Total HSSI PMA TX Serializers : 0
+Total PLLs : 0
+Total DLLs : 0

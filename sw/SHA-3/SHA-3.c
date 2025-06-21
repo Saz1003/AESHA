@@ -8,14 +8,12 @@
 #define SHA3_L 6
 #define SHA3_NR (12 + 2 * SHA3_L)
 #define SHA3_B (25 << SHA3_L)
+#define INPUT_SIZE 64  // 512 bits = 64 bytes
+#define MAX_LINE_LENGTH 256
+#define HEX_CHARS_PER_LINE 128  // 512 bits = 128 hex characters
+#define MAX_LINES 10000  // Tăng từ 1000 lên 10000
 
-#define SHA3_128 128
-#define SHA3_224 224
-#define SHA3_256 256
-#define SHA3_384 384
-#define SHA3_512 512
-
-char hex[] = "0123456789ABCDEF";
+char hex[] = "0123456789abcdef";
 
 unsigned int sha3_rotConst[5][5] = {
     {0, 1, 190, 28, 91},
@@ -56,7 +54,6 @@ unsigned long long sha3_rotWord(unsigned long long w, unsigned int d)
     unsigned long long max = ~0L;
 
     unsigned long long wrapPortion = (max << (64 - d)) & w; // Get the d msb's
-
     unsigned long long shiftPortion = (max >> d) & w; // Get the (64 -d) lsb's
 
     // shift to put in place
@@ -121,41 +118,16 @@ void sha3_keccak_f(unsigned long long A[5][5])
             }
         }
 
-        // CHI ===================
+        // IOTA ===================
         A[0][0] ^= sha3_roundConsts[i];
     }
 }
 
-int sha3_hash(unsigned char *in, int n, int mode, unsigned char **out)
+int sha3_512_hash(unsigned char *in, unsigned char **out)
 {
-    // determine parameters
-    int r, ret_len;
-
-    switch (mode)
-    {
-    case SHA3_128:
-        r = 1344;
-        break;
-    case SHA3_224:
-        r = 1152;
-        break;
-    case SHA3_256:
-        r = 1088;
-        break;
-    case SHA3_384:
-        r = 832;
-        break;
-    case SHA3_512:
-        r = 576;
-        break;
-    default: // SHA_512
-        mode = SHA3_512;
-        r = 576;
-        break;
-    }
-
-    ret_len = mode >> 3; // divided to 8 => bytes
-    r >>= 3;
+    // SHA3-512 parameters
+    int r = 576 >> 3;  // 72 bytes (576 bits / 8)
+    int ret_len = 64;  // 512 bits / 8 = 64 bytes
 
     // allocate output
     *out = (unsigned char *)malloc(ret_len * sizeof(unsigned char));
@@ -165,14 +137,14 @@ int sha3_hash(unsigned char *in, int n, int mode, unsigned char **out)
     memset(A, 0, 5 * 5 * sizeof(unsigned long long));
 
     int cursor = 0;           // cursor in the message
-    int noBlocks = n / r + 1; // always pad
+    int noBlocks = INPUT_SIZE / r + 1; // always pad
 
     // ABSORBING PHASE
     for (int i = 0; i < noBlocks; i++)
     {
         // Block variables
         int blockCursor = 0;                               // cursor in block
-        int noBytesInBlock = fmin(r, fmax(n - cursor, 0)); // only take in between 0 and r bytes per block
+        int noBytesInBlock = fmin(r, fmax(INPUT_SIZE - cursor, 0)); // only take in between 0 and r bytes per block
         int noPadding = r - noBytesInBlock;                // number of bytes to padd to get complete block
         int padIdx = 0;                                    // current number of bytes already padded
 
@@ -193,14 +165,13 @@ int sha3_hash(unsigned char *in, int n, int mode, unsigned char **out)
                     }
 
                     // determine if need padding in this word
-
                     if (noBytesInWord != 8)
                     {
                         // must pad 01, then 1000*01
                         if (!padIdx)
                         {
-                            // First padding byte, pad 011 = 6
-                            tmp |= (unsigned long long)(0x06) << (noBytesInWord << 3); // noBytes to noBits
+                            // First padding byte, pad 01 instead of 06
+                            tmp |= (unsigned long long)(0x01) << (noBytesInWord << 3); // noBytes to noBits
                         }
                         if (padIdx >= noPadding - 8)
                         {
@@ -208,8 +179,7 @@ int sha3_hash(unsigned char *in, int n, int mode, unsigned char **out)
                             tmp |= (unsigned long long)(0x01) << 0x3f; // 0b1000***0
                         }
 
-                        // ohterwise, leave as zeros
-
+                        // otherwise, leave as zeros
                         padIdx += 8 - noBytesInWord;
                     }
                 }
@@ -220,7 +190,7 @@ int sha3_hash(unsigned char *in, int n, int mode, unsigned char **out)
                 blockCursor += 8;
             }
         }
-        // advance message curror
+        // advance message cursor
         cursor += noBytesInBlock;
 
         // Keccak-f
@@ -262,36 +232,138 @@ int sha3_hash(unsigned char *in, int n, int mode, unsigned char **out)
     return ret_len;
 }
 
-void printCharArr(unsigned char *arr, int len, bool hashSpace)
+// Function to print hex array to file
+void printCharArrToFile(FILE *file, unsigned char *arr, int len)
 {
-    printf("{ ");
     for (int i = 0; i < len; i++)
     {
-        printf("%c%c%s", hex[arr[i] >> 4], hex[arr[i] & 0x0f], hashSpace ? " " : "");
+        fprintf(file, "%c%c", hex[arr[i] >> 4], hex[arr[i] & 0x0f]);
     }
-    printf("%s}\n", hashSpace ? "" : " ");
+}
+
+// Function to convert hex character to integer
+int hexCharToInt(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return -1; // Invalid hex character
+}
+
+// Function to convert hex string to byte array
+int hexStringToBytes(const char* hexStr, unsigned char* bytes, int maxBytes)
+{
+    int len = strlen(hexStr);
+    int byteCount = 0;
+    
+    // Remove newline character if present
+    if (len > 0 && (hexStr[len-1] == '\n' || hexStr[len-1] == '\r'))
+        len--;
+    
+    // Each byte needs 2 hex characters
+    if (len % 2 != 0) return -1; // Invalid hex string length
+    
+    for (int i = 0; i < len && byteCount < maxBytes; i += 2)
+    {
+        int high = hexCharToInt(hexStr[i]);
+        int low = hexCharToInt(hexStr[i + 1]);
+        
+        if (high == -1 || low == -1) return -1; // Invalid hex character
+        
+        bytes[byteCount++] = (high << 4) | low;
+    }
+    
+    return byteCount;
 }
 
 int main()
 {
-    printf("Keccak-f(1600, 24)\n");
+    printf("SHA3-512 Hash Calculator - Processing up to %d lines\n", MAX_LINES);
+    printf("====================================================\n\n");
 
-    int l = SHA3_L;
-    int nr = SHA3_NR;
-    int b = SHA3_B;
-    printf("l = %d, nr = %d, b = %d\n", l, nr, b);
+    // Open input file
+    FILE *inputFile = fopen("data_in.txt", "r");
+    if (inputFile == NULL)
+    {
+        printf("Error: Cannot open data_in.txt file!\n");
+        printf("Please make sure the file exists in the same directory.\n");
+        getch();
+        return 1;
+    }
 
-    unsigned char *msg = (unsigned char *)malloc(sizeof(char));
+    // Open output file
+    FILE *outputFile = fopen("data_out_sha3.txt", "w");
+    if (outputFile == NULL)
+    {
+        printf("Error: Cannot create data_out.txt file!\n");
+        fclose(inputFile);
+        getch();
+        return 1;
+    }
+
+    char line[MAX_LINE_LENGTH];
+    int lineNumber = 1;
+    int successCount = 0;
+    int errorCount = 0;
+    unsigned char msg[INPUT_SIZE];
     unsigned char *hash = NULL;
 
-    printf("Context: ");
-    scanf("%s", msg);
-    // msg = "0573870ab1ef6263b2a7266596ab582dde8e28bd2e58495ce2ca4ec5f4007ae8e77696ce793069f247ecdb8f8932d612bbd2727772aff7e5d513d2aae2f784c5";
+    printf("Processing data from file...\n");
+    printf("Progress: ");
 
-    int len = sha3_hash(msg, strlen((const char *)msg), SHA3_512, &hash);
-    // printf("Length of message: %d\n", strlen((const char *)msg));
-    printCharArr(hash, len, false);
+    while (fgets(line, sizeof(line), inputFile) && lineNumber <= MAX_LINES)
+    {
+        // Skip empty lines
+        if (strlen(line) <= 1) {
+            lineNumber++;
+            continue;
+        }
 
+        // Convert hex string to bytes
+        int bytesRead = hexStringToBytes(line, msg, INPUT_SIZE);
+        
+        if (bytesRead != INPUT_SIZE)
+        {
+            printf("\nLine %d: Invalid data length (%d bytes, expected %d) - SKIPPED\n", 
+                   lineNumber, bytesRead, INPUT_SIZE);
+            errorCount++;
+            lineNumber++;
+            continue;
+        }
+
+        // Calculate SHA3-512 hash
+        int len = sha3_512_hash(msg, &hash);
+
+        // Show progress every 500 lines
+        if (lineNumber % 500 == 0)
+        {
+            printf("%d ", lineNumber);
+            fflush(stdout);
+        }
+
+        // Write only the hash result to output file (one line per hash)
+        printCharArrToFile(outputFile, hash, len);
+        fprintf(outputFile, "\n");
+
+        // Free allocated memory
+        free(hash);
+        hash = NULL;
+        
+        successCount++;
+        lineNumber++;
+    }
+
+    fclose(inputFile);
+    fclose(outputFile);
+    
+    printf("\n\nProcessing completed!\n");
+    printf("===================\n");
+    printf("Total lines processed: %d\n", lineNumber - 1);
+    printf("Successful hashes: %d\n", successCount);
+    printf("Errors: %d\n", errorCount);
+    printf("\nResults saved to data_out.txt\n");
+    printf("Each line contains a 128-character SHA3-512 hash\n");
+    printf("Press any key to exit...");
     getch();
     return 0;
 }

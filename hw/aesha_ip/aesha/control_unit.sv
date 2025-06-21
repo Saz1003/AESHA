@@ -46,8 +46,10 @@ localparam INIT = 2'd0, READY = 2'd1, RUN = 2'd2;
             cu_state             = INIT;
         end
         else if(cu_state == INIT) begin
-            key_reg = i_key;
-            data_reg = i_data;
+            aes_or_keccak_reg    = i_aes_or_keccak;
+            enc_or_dec_reg       = i_enc_or_dec;
+            key_reg              = i_key;
+            data_reg             = i_data;
             round_a              = 5'd0;
             round_k              = 5'd0;
             aclr_reg             = 1'd0;
@@ -55,8 +57,6 @@ localparam INIT = 2'd0, READY = 2'd1, RUN = 2'd2;
             cu_state = READY;
         end
         else if(cu_state == READY) begin
-            aes_or_keccak_reg = i_aes_or_keccak;
-            enc_or_dec_reg = i_enc_or_dec;
             busy_reg = 1'd1;
             aclr_reg = 1'd1;
             cu_state = RUN;

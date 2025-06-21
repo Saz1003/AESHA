@@ -1,0 +1,6 @@
+
+State Machine - |AESHA_wrapper|AESHA_top:TOP|control_unit:cu|cu_state
+Name cu_state.INIT cu_state.RUN cu_state.READY 
+cu_state.INIT 0 0 0 
+cu_state.READY 1 0 1 
+cu_state.RUN 1 1 0 
